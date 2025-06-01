@@ -2,13 +2,58 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { ShoppingCart, Home, BarChart3, Package, User } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
-import { COLORS } from '@/constants/theme';
-import { Platform, View, ActivityIndicator } from 'react-native';
+import { useTheme } from '@/context/ThemeContext';
+import { Platform, View, ActivityIndicator, Pressable, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Custom Tab Bar Button Component
+const CustomTabBarButton = (props: any) => {
+  const scaleValue = React.useRef(new Animated.Value(1)).current;
+
+  const onPressIn = () => {
+    Animated.spring(scaleValue, {
+      toValue: 0.96,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 10,
+    }).start();
+  };
+
+  const onPressOut = () => {
+    Animated.spring(scaleValue, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 10,
+    }).start();
+    if (props.onPress) {
+      props.onPress(); // Call original onPress
+    }
+  };
+
+  return (
+    <Pressable
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
+      onPress={props.onPress} // Keep original onPress for navigation
+      style={{ flex: 1 }} // Ensure Pressable takes up tab item space
+    >
+      <Animated.View style={{ 
+        flex: 1, 
+        transform: [{ scale: scaleValue }],
+        alignItems: 'center', // Center children (icon and label) horizontally
+        justifyContent: 'center', // Center children vertically (optional, but good for consistency)
+      }}>
+        {props.children} 
+      </Animated.View>
+    </Pressable>
+  );
+};
 
 export default function TabLayout() {
   const { userRole, isLoading, session } = useAuth();
   const insets = useSafeAreaInsets();
+  const { themeColors } = useTheme();
 
   // Base height for the tab bar content itself (icons, labels, internal padding)
   const tabBarContentHeight = Platform.OS === 'ios' ? 50 : 60;
@@ -22,8 +67,8 @@ export default function TabLayout() {
   if (isLoading || (session && userRole === null)) {
     console.log('[TabLayout Render] isLoading or (session && userRole is null), rendering ActivityIndicator.');
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.background }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: themeColors.background }}>
+        <ActivityIndicator size="large" color={themeColors.primary} />
       </View>
     );
   }
@@ -36,17 +81,18 @@ export default function TabLayout() {
   console.log('[TabLayout Render] Rendering Tabs. userRole for Dashboard check:', userRole);
   return (
     <Tabs
+      initialRouteName="index"
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: COLORS.primary,
-        tabBarInactiveTintColor: COLORS.textLight,
+        tabBarActiveTintColor: themeColors.primary,
+        tabBarInactiveTintColor: themeColors.textLight,
         tabBarStyle: {
-          backgroundColor: COLORS.white,
+          backgroundColor: themeColors.surface,
           paddingTop: Platform.OS === 'ios' ? 0 : 10, // iOS has more space due to taller tab bar
           paddingBottom: Platform.OS === 'ios' ? iosBottomPadding : androidBottomPadding,
           height: tabBarContentHeight + (Platform.OS === 'ios' ? iosBottomPadding : androidBottomPadding),
           borderTopWidth: 1,
-          borderTopColor: COLORS.border,
+          borderTopColor: themeColors.border,
         },
         tabBarLabelStyle: {
           fontFamily: 'Inter-Medium',
@@ -65,6 +111,7 @@ export default function TabLayout() {
         options={{
           title: 'Home',
           tabBarIcon: ({ color, size }) => <Home size={size} color={color} />,
+          tabBarButton: (props) => <CustomTabBarButton {...props} />,
         }}
       />
       <Tabs.Screen
@@ -72,6 +119,7 @@ export default function TabLayout() {
         options={{
           title: 'Sales',
           tabBarIcon: ({ color, size }) => <ShoppingCart size={size} color={color} />,
+          tabBarButton: (props) => <CustomTabBarButton {...props} />,
         }}
       />
       <Tabs.Screen
@@ -79,14 +127,18 @@ export default function TabLayout() {
         options={{
           title: 'Inventory',
           tabBarIcon: ({ color, size }) => <Package size={size} color={color} />,
+          tabBarButton: (props) => <CustomTabBarButton {...props} />,
         }}
       />
       <Tabs.Screen
         name="dashboard"
-        options={{
+        options={userRole === 'admin' ? {
           title: 'Dashboard',
           tabBarIcon: ({ color, size }) => <BarChart3 size={size} color={color} />,
-          href: userRole === 'admin' ? '/(tabs)/dashboard' : null,
+          tabBarButton: (props) => <CustomTabBarButton {...props} />,
+        } : {
+          // For non-admins, hide the tab and do not provide tabBarButton
+          href: null, 
         }}
       />
       <Tabs.Screen
@@ -94,6 +146,7 @@ export default function TabLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
+          tabBarButton: (props) => <CustomTabBarButton {...props} />,
         }}
       />
     </Tabs>

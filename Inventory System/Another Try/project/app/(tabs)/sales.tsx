@@ -1,13 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { COLORS } from '@/constants/theme';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Alert, Platform } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '@/context/ThemeContext';
 import { supabase } from '@/lib/supabase';
 import { Card } from '@/components/common/Card';
 import { Button } from '@/components/common/Button';
-import { Search, Plus, ShoppingCart, Trash2, X } from 'lucide-react-native';
+import { Search, Plus, ShoppingCart, Trash, X } from 'lucide-react-native';
 import { router } from 'expo-router';
 import debounce from 'lodash.debounce';
+import { SPACING, FONT_SIZE } from '@/constants/theme';
+import { ReviewCartModal } from '@/components/sales/ReviewCartModal';
+import { useFocusEffect } from 'expo-router';
 
 interface Product {
   id: string;
@@ -24,14 +27,19 @@ interface CartItem {
 }
 
 export default function SalesScreen() {
+  const { themeColors } = useTheme();
+  const insets = useSafeAreaInsets();
+
   const [products, setProducts] = useState<Product[]>([]);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
-  const [showCart, setShowCart] = useState(false);
+  const [isReviewCartVisible, setIsReviewCartVisible] = useState(false);
 
-  const fetchProducts = async () => {
+  const CART_SUMMARY_BAR_HEIGHT = 75; // Estimated height for the summary bar
+
+  const fetchProducts = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('products')
@@ -39,9 +47,7 @@ export default function SalesScreen() {
         .gt('stock_count', 0)
         .order('name');
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       if (data) {
         setProducts(data);
@@ -49,25 +55,34 @@ export default function SalesScreen() {
       }
     } catch (error) {
       console.error('Error fetching products:', error);
+      Alert.alert('Error', 'Could not fetch products.');
     }
-  };
-
-  useEffect(() => {
-    fetchProducts();
   }, []);
 
-  const handleRefresh = async () => {
+  useFocusEffect(
+    useCallback(() => {
+      console.log('Sales screen focused, fetching products...');
+      fetchProducts();
+
+      return () => {
+        // Optional: any cleanup actions when the screen goes out of focus
+        console.log('Sales screen unfocused');
+      };
+    }, [fetchProducts])
+  );
+
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchProducts();
     setRefreshing(false);
-  };
+  }, [fetchProducts]);
 
-  const debouncedSearch = debounce((text: string) => {
+  const debouncedSearch = useCallback(
+    debounce((text: string) => {
     if (!text.trim()) {
       setFilteredProducts(products);
       return;
     }
-
     const lowerCaseQuery = text.toLowerCase();
     const filtered = products.filter(
       (product) =>
@@ -76,80 +91,266 @@ export default function SalesScreen() {
         product.sku?.toLowerCase().includes(lowerCaseQuery)
     );
     setFilteredProducts(filtered);
-  }, 300);
+    }, 300),
+    [products]
+  );
 
   const handleSearchChange = (text: string) => {
     setSearchQuery(text);
     debouncedSearch(text);
   };
 
+  const handleClearCart = () => {
+    if (cartItems.length === 0) return;
+    Alert.alert(
+      "Clear Cart",
+      "Are you sure you want to remove all items from the cart?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: () => setCartItems([]),
+        },
+      ]
+    );
+  };
+
   const addToCart = (product: Product) => {
     const existingItemIndex = cartItems.findIndex(item => item.product.id === product.id);
-    
     if (existingItemIndex >= 0) {
-      // Product already in cart, increase quantity
       if (cartItems[existingItemIndex].quantity < product.stock_count) {
         const updatedCartItems = [...cartItems];
         updatedCartItems[existingItemIndex].quantity += 1;
         setCartItems(updatedCartItems);
       } else {
-        Alert.alert('Stock Limit', `Only ${product.stock_count} units available in stock.`);
+        Alert.alert('Stock Limit', `Only ${product.stock_count} units available.`);
       }
     } else {
-      // Add new product to cart
       setCartItems([...cartItems, { product, quantity: 1 }]);
     }
   };
 
   const removeFromCart = (productId: string) => {
-    setCartItems(cartItems.filter(item => item.product.id !== productId));
+    setCartItems(prevItems => prevItems.filter(item => item.product.id !== productId));
   };
 
-  const updateQuantity = (productId: string, quantity: number) => {
+  const updateQuantity = (productId: string, newQuantity: number) => {
     const itemIndex = cartItems.findIndex(item => item.product.id === productId);
+    if (itemIndex === -1) return;
     
-    if (itemIndex >= 0) {
       const product = cartItems[itemIndex].product;
       
-      if (quantity > product.stock_count) {
-        Alert.alert('Stock Limit', `Only ${product.stock_count} units available in stock.`);
-        return;
-      }
-      
-      if (quantity <= 0) {
+    if (newQuantity <= 0) {
         removeFromCart(productId);
         return;
       }
+    if (newQuantity > product.stock_count) {
+      Alert.alert('Stock Limit', `Only ${product.stock_count} units of ${product.name} available.`);
+      return;
+    }
       
       const updatedCartItems = [...cartItems];
-      updatedCartItems[itemIndex].quantity = quantity;
+    updatedCartItems[itemIndex].quantity = newQuantity;
       setCartItems(updatedCartItems);
-    }
   };
 
   const calculateTotal = () => {
     return cartItems.reduce((total, item) => total + item.product.price * item.quantity, 0);
   };
 
-  const handleCheckout = () => {
+  const handleOpenReviewCart = () => {
     if (cartItems.length === 0) {
-      Alert.alert('Empty Cart', 'Please add products to cart before checkout.');
+      Alert.alert('Empty Cart', 'Please add products to cart first.');
       return;
     }
+    setIsReviewCartVisible(true);
+  };
     
+  const handleProceedToFinalCheckout = () => {
+    setIsReviewCartVisible(false);
     router.push({
       pathname: '/modal/checkout',
       params: {
-        cartItems: JSON.stringify(cartItems),
+        cartItems: JSON.stringify(cartItems.map(ci => ({
+          product: { id: ci.product.id, name: ci.product.name, price: ci.product.price, stock_count: ci.product.stock_count },
+          quantity: ci.quantity
+        }))),
         total: calculateTotal().toString()
       }
     });
   };
 
+  const styles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: themeColors.background,
+    },
+    headerContainer: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: SPACING.md,
+      paddingTop: SPACING.md,
+      paddingBottom: SPACING.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: themeColors.border,
+      backgroundColor: themeColors.surface,
+    },
+    headerTitle: {
+      fontSize: FONT_SIZE.xl,
+      fontFamily: 'Inter-Bold',
+      color: themeColors.text,
+    },
+    headerCartIconContainer: {
+      padding: SPACING.sm,
+    },
+    headerCartBadge: {
+      position: 'absolute',
+      right: SPACING.xs,
+      top: SPACING.xs,
+      backgroundColor: themeColors.error,
+      borderRadius: 10,
+      width: 20,
+      height: 20,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    headerCartBadgeText: {
+      color: themeColors.white,
+      fontSize: FONT_SIZE.xs,
+      fontFamily: 'Inter-Bold',
+    },
+    searchContainer: {
+      paddingHorizontal: SPACING.md,
+      paddingVertical: SPACING.sm,
+      backgroundColor: themeColors.surface,
+    },
+    searchBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: themeColors.background,
+      borderRadius: SPACING.sm,
+      paddingHorizontal: SPACING.md,
+      borderWidth: 1,
+      borderColor: themeColors.border,
+    },
+    searchIcon: {
+      marginRight: SPACING.sm,
+    },
+    searchInput: {
+      flex: 1,
+      paddingVertical: SPACING.sm,
+      fontSize: FONT_SIZE.md,
+      color: themeColors.text,
+      fontFamily: 'Inter-Regular',
+    },
+    listContent: {
+      paddingHorizontal: SPACING.md,
+      paddingTop: SPACING.sm,
+      paddingBottom: cartItems.length > 0 
+                       ? insets.bottom + SPACING.md + CART_SUMMARY_BAR_HEIGHT 
+                       : insets.bottom + SPACING.md, 
+    },
+    productCard: {
+      marginBottom: SPACING.md,
+    },
+    productContent: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    productName: {
+      fontSize: FONT_SIZE.md,
+      fontFamily: 'Inter-SemiBold',
+      color: themeColors.text,
+      marginBottom: SPACING.xs / 2,
+    },
+    productCategory: {
+      fontSize: FONT_SIZE.sm,
+      fontFamily: 'Inter-Regular',
+      color: themeColors.textLight,
+      marginBottom: SPACING.xs / 2,
+    },
+    productPrice: {
+      fontSize: FONT_SIZE.md,
+      fontFamily: 'Inter-Bold',
+      color: themeColors.primary,
+      marginTop: SPACING.xs,
+    },
+    productStock: {
+      fontSize: FONT_SIZE.xs,
+      fontFamily: 'Inter-Regular',
+      color: themeColors.textLight,
+      marginTop: SPACING.xs,
+    },
+    addButton: {
+      paddingHorizontal: SPACING.lg,
+    },
+    emptyListContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginTop: SPACING.xxl * 2, // Give it some significant top margin
+    },
+    emptyListText: {
+      fontSize: FONT_SIZE.lg,
+      color: themeColors.textLight,
+      fontFamily: 'Inter-Medium',
+      textAlign: 'center',
+    },
+    cartSummaryContainer: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: SPACING.md,
+      paddingVertical: SPACING.sm,
+      paddingBottom: insets.bottom > 0 ? insets.bottom : SPACING.sm,
+      backgroundColor: themeColors.surface,
+      borderTopWidth: 1,
+      borderTopColor: themeColors.border,
+      height: CART_SUMMARY_BAR_HEIGHT,
+    },
+    cartSummaryTextContainer: {
+      flex: 2,
+      flexDirection: 'column',
+      justifyContent: 'center',
+      alignItems: 'flex-start',
+    },
+    cartSummaryItemsText: {
+      fontSize: FONT_SIZE.sm,
+      color: themeColors.textLight,
+      fontFamily: 'Inter-Regular',
+    },
+    cartSummaryTotalText: {
+      fontSize: FONT_SIZE.lg,
+      color: themeColors.primary,
+      fontFamily: 'Inter-Bold',
+    },
+    checkoutButtonContainer: {
+      flex: 3,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'flex-end',
+    },
+    clearCartButton: {
+        padding: SPACING.sm, 
+        marginRight: SPACING.sm,
+    },
+    checkoutButton: {
+      flexGrow: 1,
+      paddingHorizontal: SPACING.md, 
+      marginLeft: SPACING.xs,
+    },
+  });
+
   const renderProductItem = ({ item }: { item: Product }) => (
     <Card style={styles.productCard}>
       <View style={styles.productContent}>
-        <View>
+        <View style={{flex: 1, marginRight: SPACING.sm}}>
           <Text style={styles.productName}>{item.name}</Text>
           <Text style={styles.productCategory}>{item.category}</Text>
           <Text style={styles.productPrice}>₹{item.price.toFixed(2)}</Text>
@@ -165,70 +366,33 @@ export default function SalesScreen() {
     </Card>
   );
 
-  const renderCartItem = ({ item }: { item: CartItem }) => (
-    <Card style={styles.cartItemCard}>
-      <View style={styles.cartItemContent}>
-        <View style={styles.cartItemInfo}>
-          <Text style={styles.cartItemName}>{item.product.name}</Text>
-          <Text style={styles.cartItemPrice}>₹{item.product.price.toFixed(2)}</Text>
-        </View>
-        
-        <View style={styles.cartItemActions}>
-          <TouchableOpacity
-            onPress={() => updateQuantity(item.product.id, item.quantity - 1)}
-            style={styles.quantityButton}
-          >
-            <Text style={styles.quantityButtonText}>-</Text>
-          </TouchableOpacity>
-          
-          <Text style={styles.quantityText}>{item.quantity}</Text>
-          
-          <TouchableOpacity
-            onPress={() => updateQuantity(item.product.id, item.quantity + 1)}
-            style={styles.quantityButton}
-          >
-            <Text style={styles.quantityButtonText}>+</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            onPress={() => removeFromCart(item.product.id)}
-            style={styles.removeButton}
-          >
-            <Trash2 size={16} color={COLORS.error} />
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Card>
-  );
-
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Sales</Text>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.headerContainer}>
+        <Text style={styles.headerTitle}>Create Sale</Text>
         <TouchableOpacity
-          style={styles.cartButton}
-          onPress={() => setShowCart(!showCart)}
+          style={styles.headerCartIconContainer} 
+          onPress={handleOpenReviewCart}
         >
-          <ShoppingCart size={24} color={COLORS.primary} />
+          <ShoppingCart size={24} color={themeColors.primary} />
           {cartItems.length > 0 && (
-            <View style={styles.cartBadge}>
-              <Text style={styles.cartBadgeText}>{cartItems.length}</Text>
+            <View style={styles.headerCartBadge}>
+              <Text style={styles.headerCartBadgeText}>{cartItems.length}</Text>
             </View>
           )}
         </TouchableOpacity>
       </View>
 
-      {!showCart ? (
-        <>
+      <View style={{flex: 1}}>
           <View style={styles.searchContainer}>
             <View style={styles.searchBar}>
-              <Search size={20} color={COLORS.textLight} style={styles.searchIcon} />
+              <Search size={20} color={themeColors.textLight} style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search products..."
                 value={searchQuery}
                 onChangeText={handleSearchChange}
-                placeholderTextColor={COLORS.textLight}
+                placeholderTextColor={themeColors.textLight}
               />
             </View>
           </View>
@@ -239,335 +403,50 @@ export default function SalesScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-            }
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={themeColors.primary}
           />
-
-          {cartItems.length > 0 && (
-            <View style={styles.bottomBar}>
-              <View>
-                <Text style={styles.totalItems}>{cartItems.length} items</Text>
-                <Text style={styles.totalAmount}>₹{calculateTotal().toFixed(2)}</Text>
+            }
+            ListEmptyComponent={() => (
+              <View style={styles.emptyListContainer}>
+                <Text style={styles.emptyListText}>
+                  {searchQuery ? 'No products found for your search.' : 'No products available. Pull to refresh.'}
+                </Text>
               </View>
-              <Button
-                title="Checkout"
-                onPress={handleCheckout}
-                variant="primary"
-                style={styles.checkoutButton}
+            )}
               />
             </View>
-          )}
-        </>
-      ) : (
-        <View style={styles.cartContainer}>
-          <View style={styles.cartHeader}>
-            <Text style={styles.cartTitle}>Shopping Cart</Text>
-            <TouchableOpacity onPress={() => setShowCart(false)}>
-              <X size={24} color={COLORS.text} />
-            </TouchableOpacity>
+
+      {cartItems.length > 0 && (
+        <View style={styles.cartSummaryContainer}>
+          <View style={styles.cartSummaryTextContainer}>
+            <Text style={styles.cartSummaryItemsText}>
+              {cartItems.length} {cartItems.length === 1 ? 'item' : 'items'}
+            </Text>
+            <Text style={styles.cartSummaryTotalText}>₹{calculateTotal().toFixed(2)}</Text>
           </View>
-
-          {cartItems.length === 0 ? (
-            <View style={styles.emptyCartContainer}>
-              <ShoppingCart size={64} color={COLORS.textLight} />
-              <Text style={styles.emptyCartText}>Your cart is empty</Text>
+          <View style={styles.checkoutButtonContainer}>
+            <TouchableOpacity style={styles.clearCartButton} onPress={handleClearCart} activeOpacity={0.7}>
+                <Trash size={24} color={themeColors.error} />
+            </TouchableOpacity>
               <Button
-                title="Add Products"
-                onPress={() => setShowCart(false)}
-                variant="primary"
-                style={styles.addProductsButton}
-              />
-            </View>
-          ) : (
-            <>
-              <FlatList
-                data={cartItems}
-                renderItem={renderCartItem}
-                keyExtractor={(item) => item.product.id}
-                contentContainerStyle={styles.cartListContent}
-              />
-
-              <View style={styles.cartSummary}>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Subtotal</Text>
-                  <Text style={styles.summaryValue}>₹{calculateTotal().toFixed(2)}</Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Tax (18%)</Text>
-                  <Text style={styles.summaryValue}>₹{(calculateTotal() * 0.18).toFixed(2)}</Text>
-                </View>
-                <View style={styles.divider} />
-                <View style={styles.summaryRow}>
-                  <Text style={styles.totalLabel}>Total</Text>
-                  <Text style={styles.totalValue}>₹{(calculateTotal() * 1.18).toFixed(2)}</Text>
-                </View>
-
-                <Button
-                  title="Proceed to Checkout"
-                  onPress={handleCheckout}
-                  variant="primary"
-                  style={styles.proceedButton}
-                  fullWidth
+              title="View Cart & Checkout"
+              onPress={handleOpenReviewCart}
+              style={styles.checkoutButton}
+              icon={<ShoppingCart size={18} color={themeColors.onPrimary} />}
                 />
               </View>
-            </>
-          )}
         </View>
       )}
+      
+      <ReviewCartModal
+        visible={isReviewCartVisible}
+        cartItems={cartItems}
+        onClose={() => setIsReviewCartVisible(false)}
+        onUpdateQuantity={updateQuantity}
+        onRemoveItem={removeFromCart}
+        onProceedToCheckout={handleProceedToFinalCheckout}
+        totalAmount={calculateTotal()}
+      />
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    paddingBottom: 8,
-  },
-  title: {
-    fontSize: 24,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.text,
-  },
-  cartButton: {
-    position: 'relative',
-    padding: 4,
-  },
-  cartBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    backgroundColor: COLORS.error,
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cartBadgeText: {
-    color: COLORS.white,
-    fontSize: 12,
-    fontFamily: 'Inter-Bold',
-  },
-  searchContainer: {
-    padding: 16,
-    paddingTop: 8,
-    paddingBottom: 16,
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.white,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 12,
-    height: 40,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    height: 40,
-    color: COLORS.text,
-    fontFamily: 'Inter-Regular',
-  },
-  listContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    paddingTop: 16,
-  },
-  productCard: {
-    marginBottom: 12,
-  },
-  productContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  productName: {
-    fontSize: 16,
-    fontFamily: 'Inter-SemiBold',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  productCategory: {
-    fontSize: 14,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.textLight,
-    marginBottom: 4,
-  },
-  productPrice: {
-    fontSize: 16,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.primary,
-    marginBottom: 4,
-  },
-  productStock: {
-    fontSize: 12,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.textLight,
-  },
-  addButton: {
-    paddingHorizontal: 16,
-    minHeight: 40,
-  },
-  bottomBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: COLORS.white,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  totalItems: {
-    fontSize: 14,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.textLight,
-  },
-  totalAmount: {
-    fontSize: 18,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.text,
-  },
-  checkoutButton: {
-    paddingHorizontal: 24,
-  },
-  cartContainer: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  cartHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-  },
-  cartTitle: {
-    fontSize: 18,
-    fontFamily: 'Inter-SemiBold',
-    color: COLORS.text,
-  },
-  emptyCartContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 16,
-  },
-  emptyCartText: {
-    fontSize: 16,
-    fontFamily: 'Inter-Medium',
-    color: COLORS.textLight,
-    marginTop: 16,
-    marginBottom: 24,
-  },
-  addProductsButton: {
-    width: 160,
-  },
-  cartListContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    paddingTop: 8,
-  },
-  cartItemCard: {
-    marginBottom: 12,
-  },
-  cartItemContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  cartItemInfo: {
-    flex: 1,
-  },
-  cartItemName: {
-    fontSize: 16,
-    fontFamily: 'Inter-Medium',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  cartItemPrice: {
-    fontSize: 16,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.primary,
-  },
-  cartItemActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  quantityButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.white,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  quantityButtonText: {
-    fontSize: 16,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.text,
-  },
-  quantityText: {
-    fontSize: 16,
-    fontFamily: 'Inter-Medium',
-    color: COLORS.text,
-    marginHorizontal: 12,
-    minWidth: 24,
-    textAlign: 'center',
-  },
-  removeButton: {
-    marginLeft: 16,
-    padding: 4,
-  },
-  cartSummary: {
-    backgroundColor: COLORS.white,
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  summaryLabel: {
-    fontSize: 14,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.textLight,
-  },
-  summaryValue: {
-    fontSize: 14,
-    fontFamily: 'Inter-Medium',
-    color: COLORS.text,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: COLORS.border,
-    marginVertical: 8,
-  },
-  totalLabel: {
-    fontSize: 16,
-    fontFamily: 'Inter-SemiBold',
-    color: COLORS.text,
-  },
-  totalValue: {
-    fontSize: 18,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.primary,
-  },
-  proceedButton: {
-    marginTop: 16,
-  },
-});

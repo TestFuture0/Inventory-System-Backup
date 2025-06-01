@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, TextInput, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { COLORS } from '@/constants/theme';
+import { useTheme } from '@/context/ThemeContext'; // Import useTheme
 import { Button } from '@/components/common/Button';
 import { useAuth } from '@/context/AuthContext';
-import { router } from 'expo-router';
+import { router, Stack } from 'expo-router';
 import { getCategories, addCategory, updateCategory, deleteCategory, Category } from '@/lib/categoryService';
 import { X, Edit3, Trash2, Plus } from 'lucide-react-native';
-import { Stack } from 'expo-router';
 
 export default function ManageCategoriesScreen() {
   const { userRole } = useAuth();
+  const { themeColors } = useTheme(); // Get theme colors
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,12 +107,141 @@ export default function ManageCategoriesScreen() {
       ]
     );
   };
+  
+  // Define styles inside the component
+  const styles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: themeColors.background,
+    },
+    centered: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+      backgroundColor: themeColors.background, // Ensure centered view also uses theme background
+    },
+    loadingText: {
+      marginTop: 10,
+      fontSize: 16,
+      color: themeColors.text,
+      fontFamily: 'Inter-Regular',
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: themeColors.border,
+      backgroundColor: themeColors.surface, // Optional: for a slightly different header background
+    },
+    backButton: {
+      padding: 8,
+    },
+    title: {
+      fontSize: 20,
+      fontFamily: 'Inter-SemiBold',
+      color: themeColors.text,
+    },
+    addButton: {
+      padding: 8,
+    },
+    errorTextCentral: {
+      color: themeColors.error,
+      textAlign: 'center',
+      padding: 16,
+      fontFamily: 'Inter-Regular',
+    },
+    emptyText: {
+      fontSize: 16,
+      color: themeColors.textLight,
+      fontFamily: 'Inter-Regular',
+    },
+    listContent: {
+      paddingHorizontal: 16,
+      paddingBottom: 16,
+    },
+    categoryItem: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingVertical: 15,
+      borderBottomWidth: 1,
+      borderBottomColor: themeColors.border,
+    },
+    categoryName: {
+      fontSize: 16,
+      color: themeColors.text,
+      fontFamily: 'Inter-Medium',
+    },
+    actions: {
+      flexDirection: 'row',
+    },
+    actionButton: {
+      padding: 8,
+      marginLeft: 8,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.6)', // Darker overlay for better glass effect
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    modalContent: {
+      width: '90%',
+      backgroundColor: themeColors.surface, // Themed surface for modal
+      borderRadius: 12,
+      padding: 20,
+      elevation: 5,
+      shadowColor: themeColors.shadow,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 3.84,
+    },
+    modalTitle: {
+      fontSize: 18,
+      fontFamily: 'Inter-SemiBold',
+      color: themeColors.text,
+      marginBottom: 15,
+      textAlign: 'center',
+    },
+    input: {
+      borderWidth: 1,
+      borderColor: themeColors.border,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 16,
+      color: themeColors.text,
+      backgroundColor: themeColors.background, // Slightly different background for input on surface
+      marginBottom: 15,
+      minHeight: 48,
+    },
+    errorTextModal: {
+      color: themeColors.error,
+      fontSize: 14,
+      marginBottom: 10,
+      textAlign: 'center',
+      fontFamily: 'Inter-Regular',
+    },
+    modalActions: {
+      flexDirection: 'row',
+      justifyContent: 'space-around',
+      marginTop: 10,
+    },
+    modalButton: {
+      flex: 1,
+      marginHorizontal: 5,
+    },
+  });
 
   if (loading && categories.length === 0) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
+          <ActivityIndicator size="large" color={themeColors.primary} />
           <Text style={styles.loadingText}>Loading categories...</Text>
         </View>
       </SafeAreaView>
@@ -120,27 +249,25 @@ export default function ManageCategoriesScreen() {
   }
   
   if (userRole !== 'admin') {
-    // This check is mainly for the initial load, useEffect handles redirection
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centered}>
-            <Text>Access Denied. Admins only.</Text>
+            <Text style={{color: themeColors.text, fontFamily: 'Inter-Regular'}}>Access Denied. Admins only.</Text>
         </View>
       </SafeAreaView>
     );
   }
-
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <X size={24} color={COLORS.text} />
+          <X size={24} color={themeColors.text} />
         </TouchableOpacity>
         <Text style={styles.title}>Manage Categories</Text>
         <TouchableOpacity onPress={() => openModal('add')} style={styles.addButton}>
-          <Plus size={28} color={COLORS.primary} />
+          <Plus size={28} color={themeColors.primary} />
         </TouchableOpacity>
       </View>
 
@@ -160,10 +287,10 @@ export default function ManageCategoriesScreen() {
             <Text style={styles.categoryName}>{item.name}</Text>
             <View style={styles.actions}>
               <TouchableOpacity onPress={() => openModal('edit', item)} style={styles.actionButton}>
-                <Edit3 size={20} color={COLORS.accent} />
+                <Edit3 size={20} color={themeColors.accent} />
               </TouchableOpacity>
               <TouchableOpacity onPress={() => handleDeleteCategory(item)} style={styles.actionButton}>
-                <Trash2 size={20} color={COLORS.error} />
+                <Trash2 size={20} color={themeColors.error} />
               </TouchableOpacity>
             </View>
           </View>
@@ -185,7 +312,7 @@ export default function ManageCategoriesScreen() {
             <TextInput
               style={styles.input}
               placeholder="Category Name"
-              placeholderTextColor={COLORS.gray}
+              placeholderTextColor={themeColors.textLight} // Themed placeholder
               value={categoryNameInput}
               onChangeText={setCategoryNameInput}
               autoFocus
@@ -208,131 +335,4 @@ export default function ManageCategoriesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  centered: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  loadingText: {
-    marginTop: 10,
-    fontSize: 16,
-    color: COLORS.text,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  backButton: {
-    padding: 8,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    fontFamily: 'Inter-Bold',
-  },
-  addButton: {
-    padding: 8,
-  },
-  errorTextCentral: {
-    color: COLORS.error,
-    textAlign: 'center',
-    marginVertical: 10,
-    fontSize: 16,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: COLORS.gray,
-    textAlign: 'center',
-  },
-  listContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-  },
-  categoryItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  categoryName: {
-    fontSize: 16,
-    color: COLORS.text,
-    fontFamily: 'Inter-Regular',
-    flex: 1, // Allow name to take available space
-  },
-  actions: {
-    flexDirection: 'row',
-  },
-  actionButton: {
-    marginLeft: 16,
-    padding: 8,
-  },
-  // Modal Styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 20,
-    width: '100%',
-    maxWidth: 400,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-    textAlign: 'center',
-    color: COLORS.text,
-    fontFamily: 'Inter-Bold',
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
-    marginBottom: 16,
-    backgroundColor: COLORS.white,
-    color: COLORS.text,
-    fontFamily: 'Inter-Regular',
-  },
-  errorTextModal: {
-      color: COLORS.error,
-      fontSize: 14,
-      marginBottom: 10,
-      textAlign: 'center',
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  modalButton: {
-    flex: 1,
-    marginHorizontal: 4,
-  }
-}); 
+// Original styles are removed

@@ -6,8 +6,9 @@ import {
   ViewStyle,
   TextStyle,
   Pressable,
+  View,
 } from 'react-native';
-import { COLORS } from '@/constants/theme';
+import { useTheme } from '@/context/ThemeContext';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'success' | 'warning' | 'outline';
 
@@ -20,6 +21,7 @@ interface ButtonProps {
   style?: ViewStyle;
   textStyle?: TextStyle;
   fullWidth?: boolean;
+  icon?: React.ReactNode;
 }
 
 export function Button({
@@ -31,7 +33,67 @@ export function Button({
   style,
   textStyle,
   fullWidth = false,
+  icon,
 }: ButtonProps) {
+  const { themeColors } = useTheme();
+
+  const buttonStyles = StyleSheet.create({
+    button: {
+      paddingVertical: 12,
+      paddingHorizontal: 24,
+      borderRadius: 8,
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 48,
+      flexDirection: 'row',
+    },
+    fullWidth: {
+      width: '100%',
+    },
+    primaryButton: {
+      backgroundColor: themeColors.primary,
+    },
+    secondaryButton: {
+      backgroundColor: themeColors.secondary,
+    },
+    dangerButton: {
+      backgroundColor: themeColors.error,
+    },
+    successButton: {
+      backgroundColor: themeColors.success,
+    },
+    warningButton: {
+      backgroundColor: themeColors.warning,
+    },
+    outlineButton: {
+      backgroundColor: 'transparent',
+      borderWidth: 1,
+      borderColor: themeColors.primary,
+    },
+    disabledButton: {
+      opacity: 0.6,
+      backgroundColor: themeColors.disabled,
+    },
+    pressedButton: {
+      opacity: 0.8,
+    },
+    buttonText: {
+      fontSize: 16,
+      fontWeight: '600',
+      marginLeft: icon ? 8 : 0,
+    },
+    primaryText: {
+      color: themeColors.white,
+    },
+    outlineText: {
+      color: themeColors.primary,
+    },
+    disabledText: {
+      color: themeColors.textLight,
+      opacity: 0.8,
+    },
+  });
+
   const getButtonStyle = () => {
     const styles: ViewStyle[] = [buttonStyles.button];
     
@@ -84,6 +146,8 @@ export function Button({
     return styles;
   };
   
+  const loaderColor = variant === 'outline' ? themeColors.primary : themeColors.white;
+  
   return (
     <Pressable
       style={({ pressed }) => [
@@ -95,63 +159,13 @@ export function Button({
       disabled={disabled || loading}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={variant === 'outline' ? COLORS.primary : COLORS.white} />
+        <ActivityIndicator size="small" color={loaderColor} />
       ) : (
+        <>
+          {icon}
         <Text style={[...getTextStyle(), textStyle]}>{title}</Text>
+        </>
       )}
     </Pressable>
   );
 }
-
-const buttonStyles = StyleSheet.create({
-  button: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 48,
-  },
-  fullWidth: {
-    width: '100%',
-  },
-  primaryButton: {
-    backgroundColor: COLORS.primary,
-  },
-  secondaryButton: {
-    backgroundColor: COLORS.secondary,
-  },
-  dangerButton: {
-    backgroundColor: COLORS.error,
-  },
-  successButton: {
-    backgroundColor: COLORS.success,
-  },
-  warningButton: {
-    backgroundColor: COLORS.warning,
-  },
-  outlineButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-  },
-  disabledButton: {
-    opacity: 0.6,
-  },
-  pressedButton: {
-    opacity: 0.8,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  primaryText: {
-    color: COLORS.white,
-  },
-  outlineText: {
-    color: COLORS.primary,
-  },
-  disabledText: {
-    opacity: 0.8,
-  },
-});

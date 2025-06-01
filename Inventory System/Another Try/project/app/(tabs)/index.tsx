@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/context/AuthContext';
-import { COLORS } from '@/constants/theme';
+import { useTheme } from '@/context/ThemeContext';
 import { Card } from '@/components/common/Card';
 import { supabase } from '@/lib/supabase';
 import { AlertTriangle, TrendingUp, ShoppingCart, Package } from 'lucide-react-native';
+import { SPACING, FONT_SIZE } from '@/constants/theme';
+import { useFocusEffect } from 'expo-router';
 
 interface Stats {
   totalProducts: number;
@@ -16,6 +18,9 @@ interface Stats {
 
 export default function HomeScreen() {
   const { user, userRole } = useAuth();
+  const { themeColors } = useTheme();
+  const insets = useSafeAreaInsets();
+
   const [stats, setStats] = useState<Stats>({
     totalProducts: 0,
     lowStockItems: 0,
@@ -25,7 +30,7 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       setLoading(true);
       
@@ -68,24 +73,110 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchStats();
   }, []);
 
-  const onRefresh = async () => {
+  useFocusEffect(
+    useCallback(() => {
+      console.log('Home screen focused, fetching stats...');
+      fetchStats();
+
+      return () => {
+        console.log('Home screen unfocused');
+      };
+    }, [fetchStats])
+  );
+
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchStats();
     setRefreshing(false);
-  };
+  }, [fetchStats]);
+
+  const styles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: themeColors.background,
+    },
+    scrollContent: {
+      padding: SPACING.md,
+      paddingBottom: insets.bottom + SPACING.lg,
+    },
+    header: {
+      marginBottom: SPACING.lg,
+    },
+    welcomeText: {
+      fontSize: FONT_SIZE.xxl,
+      fontFamily: 'Inter-Bold',
+      color: themeColors.text,
+    },
+    roleText: {
+      fontSize: FONT_SIZE.md,
+      fontFamily: 'Inter-Regular',
+      color: themeColors.textLight,
+      marginTop: SPACING.xs,
+    },
+    sectionTitle: {
+      fontSize: FONT_SIZE.lg,
+      fontFamily: 'Inter-SemiBold',
+      color: themeColors.text,
+      marginBottom: SPACING.md,
+    },
+    statsContainer: {
+      marginBottom: SPACING.lg,
+    },
+    statsGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+    },
+    statCard: {
+      width: '48%',
+      alignItems: 'center',
+      padding: SPACING.md,
+      marginBottom: SPACING.md,
+    },
+    statValue: {
+      fontSize: FONT_SIZE.xl,
+      fontFamily: 'Inter-Bold',
+      color: themeColors.text,
+      marginTop: SPACING.sm,
+    },
+    statLabel: {
+      fontSize: FONT_SIZE.sm,
+      fontFamily: 'Inter-Regular',
+      color: themeColors.textLight,
+      marginTop: SPACING.xs,
+    },
+    actionsContainer: {
+      marginBottom: SPACING.lg,
+    },
+    cardTitle: {
+      fontSize: FONT_SIZE.md,
+      fontFamily: 'Inter-SemiBold',
+      color: themeColors.text,
+      marginBottom: SPACING.sm,
+    },
+    alertText: {
+      fontSize: FONT_SIZE.sm,
+      fontFamily: 'Inter-Regular',
+      color: themeColors.error,
+      lineHeight: FONT_SIZE.sm * 1.5,
+    },
+    normalText: {
+      fontSize: FONT_SIZE.sm,
+      fontFamily: 'Inter-Regular',
+      color: themeColors.text,
+      lineHeight: FONT_SIZE.sm * 1.5,
+    },
+  });
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={themeColors.primary}
+          />
         }
       >
         <View style={styles.header}>
@@ -101,25 +192,25 @@ export default function HomeScreen() {
           <Text style={styles.sectionTitle}>Quick Overview</Text>
           <View style={styles.statsGrid}>
             <Card style={styles.statCard}>
-              <Package color={COLORS.primary} size={24} />
+              <Package color={themeColors.primary} size={24} />
               <Text style={styles.statValue}>{stats.totalProducts}</Text>
               <Text style={styles.statLabel}>Total Products</Text>
             </Card>
 
             <Card style={styles.statCard}>
-              <AlertTriangle color={COLORS.warning} size={24} />
+              <AlertTriangle color={themeColors.warning} size={24} />
               <Text style={styles.statValue}>{stats.lowStockItems}</Text>
               <Text style={styles.statLabel}>Low Stock Items</Text>
             </Card>
 
             <Card style={styles.statCard}>
-              <ShoppingCart color={COLORS.success} size={24} />
+              <ShoppingCart color={themeColors.success} size={24} />
               <Text style={styles.statValue}>{stats.todaySales}</Text>
               <Text style={styles.statLabel}>Today's Sales</Text>
             </Card>
 
             <Card style={styles.statCard}>
-              <TrendingUp color={COLORS.accent} size={24} />
+              <TrendingUp color={themeColors.accent} size={24} />
               <Text style={styles.statValue}>₹{stats.todayRevenue.toFixed(2)}</Text>
               <Text style={styles.statLabel}>Today's Revenue</Text>
             </Card>
@@ -153,78 +244,3 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  header: {
-    marginBottom: 24,
-  },
-  welcomeText: {
-    fontSize: 24,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.text,
-  },
-  roleText: {
-    fontSize: 16,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.textLight,
-    marginTop: 4,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontFamily: 'Inter-SemiBold',
-    color: COLORS.text,
-    marginBottom: 12,
-  },
-  statsContainer: {
-    marginBottom: 24,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-  },
-  statCard: {
-    width: '48%',
-    alignItems: 'center',
-    padding: 16,
-    marginBottom: 12,
-  },
-  statValue: {
-    fontSize: 20,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.text,
-    marginTop: 8,
-  },
-  statLabel: {
-    fontSize: 14,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.textLight,
-    marginTop: 4,
-  },
-  actionsContainer: {
-    marginBottom: 24,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontFamily: 'Inter-SemiBold',
-    color: COLORS.text,
-    marginBottom: 8,
-  },
-  alertText: {
-    fontSize: 14,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.error,
-  },
-  normalText: {
-    fontSize: 14,
-    fontFamily: 'Inter-Regular',
-    color: COLORS.text,
-  },
-});

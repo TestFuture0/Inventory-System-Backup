@@ -2,6 +2,7 @@ import React, { createContext, useState, useEffect, useContext, useCallback } fr
 import { supabase } from '@/lib/supabase';
 import { Session, User } from '@supabase/supabase-js';
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type UserRole = 'admin' | 'employee' | null;
 
@@ -66,26 +67,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [setUserRole]);
 
   const signOut = useCallback(async () => {
-    // console.log('Attempting to sign out...'); // Removed for debugging
+    // console.log('Attempting to sign out...');
     try {
       setIsLoading(true);
       const { error } = await supabase.auth.signOut();
 
       if (error) {
-        // If Supabase signout fails, log it but still attempt to clear local state and redirect.
         console.error('Supabase signOut error object:', error);
         console.error('Supabase signOut error:', error.message);
       }
       
-      // Clear local state regardless of Supabase error, as we want to ensure the app reflects a signed-out state.
       setUser(null);
       setSession(null);
       setUserRole(null);
+
+      // DO NOT Clear theme preferences from AsyncStorage to persist theme
+      // try {
+      //   await AsyncStorage.removeItem('themeMode');
+      //   await AsyncStorage.removeItem('isSystemTheme');
+      //   console.log('Theme preferences cleared on signOut.'); // This log would be removed too
+      // } catch (e) {
+      //   console.error('Failed to clear theme preferences on signOut:', e);
+      // }
       
       router.replace('/auth/login');
-    } catch (error: any) { // Catch any unexpected errors during the process
+    } catch (error: any) {
       console.error('Error in signOut function:', error.message);
-      // Still try to clear state and redirect as a fallback
       setUser(null);
       setSession(null);
       setUserRole(null);

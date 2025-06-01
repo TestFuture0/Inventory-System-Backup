@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Pressable } from 'react-native';
 import { useAuth } from '@/context/AuthContext';
-import { COLORS } from '@/constants/theme';
 import { Input } from '@/components/common/Input';
 import { Button } from '@/components/common/Button';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTheme } from '@/context/ThemeContext';
+import { SPACING, FONT_SIZE, BORDER_RADIUS } from '@/constants/theme';
 
 export default function Login() {
   const { signIn, isLoading } = useAuth();
+  const { themeColors } = useTheme();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -19,7 +22,7 @@ export default function Login() {
       setErrorMessage('Email and password are required');
       return;
     }
-
+    setErrorMessage('');
     try {
       await signIn(email, password);
     } catch (error: any) {
@@ -27,15 +30,68 @@ export default function Login() {
     }
   };
 
+  const styles = StyleSheet.create({
+    safeArea: {
+      flex: 1,
+      backgroundColor: themeColors.background,
+    },
+    container: {
+      flex: 1,
+    },
+    scrollContent: {
+      flexGrow: 1,
+      justifyContent: 'center',
+      padding: SPACING.lg,
+    },
+    header: {
+      alignItems: 'center',
+      marginBottom: SPACING.xxl,
+    },
+    title: {
+      fontSize: FONT_SIZE.xxxl,
+      fontFamily: 'Inter-Bold',
+      color: themeColors.primary,
+      marginBottom: SPACING.sm,
+    },
+    subtitle: {
+      fontSize: FONT_SIZE.md,
+      color: themeColors.textLight,
+      fontFamily: 'Inter-Regular',
+    },
+    formContainer: {
+      width: '100%',
+    },
+    errorContainer: {
+      backgroundColor: themeColors.errorContainer,
+      padding: SPACING.md,
+      borderRadius: BORDER_RADIUS.sm,
+      marginBottom: SPACING.md,
+    },
+    errorText: {
+      color: themeColors.onErrorContainer,
+      fontSize: FONT_SIZE.sm,
+      fontFamily: 'Inter-Medium',
+      textAlign: 'center',
+    },
+    button: {
+      marginTop: SPACING.lg,
+    },
+    inputRightIconContainer: {
+      padding: SPACING.sm,
+      justifyContent: 'center',
+      alignItems: 'center',
+    }
+  });
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.container}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           <View style={styles.header}>
-            <Text style={styles.title}>Parts Inventory</Text>
+            <Text style={styles.title}>Truck Center</Text>
             <Text style={styles.subtitle}>Sign in to your account</Text>
           </View>
 
@@ -52,8 +108,8 @@ export default function Login() {
               keyboardType="email-address"
               autoCapitalize="none"
               value={email}
-              onChangeText={setEmail}
-              leftIcon={<Mail size={20} color={COLORS.textLight} />}
+              onChangeText={(text) => { setEmail(text); setErrorMessage(''); }}
+              leftIcon={<Mail size={20} color={themeColors.textLight} />}
             />
 
             <Input
@@ -61,15 +117,15 @@ export default function Login() {
               placeholder="Enter your password"
               secureTextEntry={!showPassword}
               value={password}
-              onChangeText={setPassword}
-              leftIcon={<Lock size={20} color={COLORS.textLight} />}
+              onChangeText={(text) => { setPassword(text); setErrorMessage(''); }}
+              leftIcon={<Lock size={20} color={themeColors.textLight} />}
               rightIcon={
-                <Pressable onPress={() => setShowPassword(!showPassword)}>
-                  <EyeOff
-                    size={20}
-                    color={COLORS.textLight}
-                    style={{ opacity: showPassword ? 0 : 1 }}
-                  />
+                <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.inputRightIconContainer}>
+                  {showPassword ? (
+                    <Eye size={20} color={themeColors.textLight} />
+                  ) : (
+                    <EyeOff size={20} color={themeColors.textLight} />
+                  )}
                 </Pressable>
               }
             />
@@ -78,7 +134,7 @@ export default function Login() {
               title="Sign In"
               onPress={handleLogin}
               loading={isLoading}
-              disabled={isLoading}
+              disabled={isLoading || !email || !password}
               fullWidth
               style={styles.button}
             />
@@ -88,52 +144,3 @@ export default function Login() {
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    padding: 24,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: 32,
-    marginTop: 40,
-  },
-  title: {
-    fontSize: 28,
-    fontFamily: 'Inter-Bold',
-    color: COLORS.primary,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: COLORS.textLight,
-    fontFamily: 'Inter-Regular',
-  },
-  formContainer: {
-    width: '100%',
-    maxWidth: 400,
-    alignSelf: 'center',
-  },
-  errorContainer: {
-    backgroundColor: COLORS.errorLight,
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-  },
-  errorText: {
-    color: COLORS.white,
-    fontSize: 14,
-    fontFamily: 'Inter-Medium',
-  },
-  button: {
-    marginTop: 16,
-  },
-});

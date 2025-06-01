@@ -5,8 +5,8 @@ import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
+import { ThemeProvider, useTheme } from '@/context/ThemeContext';
 import { View, ActivityIndicator } from 'react-native';
-import { COLORS } from '@/constants/theme';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 // Prevent splash screen from auto-hiding
@@ -14,6 +14,7 @@ SplashScreen.preventAutoHideAsync();
 
 function Screens() {
   const { session, isLoading } = useAuth();
+  const { themeColors } = useTheme();
   const antdRouter = useRouter();
   console.log('[Screens] isLoading:', isLoading, 'Session:', !!session);
 
@@ -24,21 +25,28 @@ function Screens() {
       return; // Wait for auth state to resolve
     }
 
-    // Once loading is false, redirect based on session state.
+    // Once loading is false, the rendering logic below will determine what to show based on session.
+    // Explicit navigation might not be needed here if stacks are correctly switched by render.
     if (session) {
-      console.log('[Screens Effect] Session exists, replacing with /(tabs)');
-      antdRouter.replace('/(tabs)');
+      console.log('[Screens Effect] Session exists. Relying on render logic to show (tabs) stack.');
+      // const timer = setTimeout(() => {
+      //   console.log('[Screens Effect] Timeout complete, replacing with /(tabs)');
+      //   antdRouter.replace('/(tabs)');
+      // }, 0);
+      // return () => clearTimeout(timer);
     } else {
-      console.log('[Screens Effect] No session, replacing with /auth/login');
-      antdRouter.replace('/auth/login');
+      // When no session, the rendering logic below will handle showing the auth stack.
+      // Explicit redirect to /auth/login is handled by AuthContext.signOut
+      // and potentially by initial mount if no session and not loading.
+      console.log('[Screens Effect] No session. Relying on render logic to show auth stack / login.');
     }
-  }, [session, isLoading, antdRouter]);
+  }, [session, isLoading]); // Removed antdRouter from dependencies as it's not used for replace here
 
   if (isLoading) {
     console.log('[Screens Render] isLoading is true, rendering ActivityIndicator.');
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.background }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: themeColors.background }}>
+        <ActivityIndicator size="large" color={themeColors.primary} />
       </View>
     );
   }
@@ -90,12 +98,25 @@ export default function RootLayout() {
     return null;
   }
 
+  // We need to use a component here to access AuthContext for the key
+  const AppWrapper = () => {
+    const { session } = useAuth();
+    // Key changes when session presence changes, forcing ThemeProvider to re-mount
+    const themeProviderKey = session ? 'authed' : 'unauthed'; 
+
+    return (
+      <ThemeProvider key={themeProviderKey}>
+        <Screens />
+        <StatusBar style="auto" />
+      </ThemeProvider>
+    );
+  };
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <Screens />
-          <StatusBar style="auto" />
+          <AppWrapper />
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
