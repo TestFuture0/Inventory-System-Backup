@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Alert, ActivityIndicator, TextInput, TouchableOpacity, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, Alert, ActivityIndicator, TextInput, TouchableOpacity, Modal, Platform } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/context/ThemeContext';
 import { SPACING, FONT_SIZE, BORDER_RADIUS } from '@/constants/theme';
@@ -8,8 +8,12 @@ import { Button } from '@/components/common/Button';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useLocalSearchParams, router } from 'expo-router';
-import { Edit2, Trash2, AlertTriangle, Save, XCircle, ChevronLeft, ChevronDown } from 'lucide-react-native';
+import { Edit2, Trash2, AlertTriangle, Save, XCircle, ChevronLeft, ChevronDown, Image as ImageIcon, Camera, X } from 'lucide-react-native';
 import { getCategories, Category as ProductCategory } from '@/lib/categoryService';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { Asset } from 'expo-asset';
+import * as tus from 'tus-js-client';
 
 interface Product {
   id: string;
@@ -42,11 +46,199 @@ export default function ProductDetailsScreen() {
   const [sku, setSku] = useState('');
   const [imageUrl, setImageUrl] = useState('');
 
+  // State for new image selection
+  const [selectedImageForEdit, setSelectedImageForEdit] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+
   // State for category selection
   const [productCategories, setProductCategories] = useState<ProductCategory[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [categoriesError, setCategoriesError] = useState<string | null>(null);
   const [isCategoryModalVisible, setIsCategoryModalVisible] = useState(false);
+
+  // START: Image Picker and Upload Functions (adapted from add-product.tsx)
+  const requestMediaLibraryPermissions = async () => {
+    if (Platform.OS !== 'web') {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Camera roll permissions are needed to select images.');
+        return false;
+      }
+      return true;
+    }
+    return true;
+  };
+
+  const requestCameraPermissions = async () => {
+    if (Platform.OS !== 'web') {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Camera permissions are needed to take photos.');
+        return false;
+      }
+      return true;
+    }
+    return true;
+  };
+
+  const pickImage = async (source: 'gallery' | 'camera') => {
+    let result;
+    if (source === 'gallery') {
+      const hasPermission = await requestMediaLibraryPermissions();
+      if (!hasPermission) return;
+      result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 1, 
+      });
+    } else {
+      const hasPermission = await requestCameraPermissions();
+      if (!hasPermission) return;
+      result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 1,
+      });
+    }
+
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      setSelectedImageForEdit(result.assets[0]);
+      setImageUrl(result.assets[0].uri); // Update imageUrl for preview immediately
+      console.log('[ProductDetails] New image selected for edit, URI:', result.assets[0].uri);
+    }
+  };
+
+  const compressImage = async (uri: string): Promise<string | null> => {
+    try {
+      console.log('[ProductDetails] Compressing image:', uri);
+      const manipResult = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: 800 } }], 
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      console.log('[ProductDetails] Compressed image URI:', manipResult.uri);
+      return manipResult.uri;
+    } catch (error) {
+      console.error('[ProductDetails] Image compression failed:', error);
+      Alert.alert('Error', 'Failed to compress image.');
+      return null;
+    }
+  };
+
+  const uploadImageWithTus = async (
+    imageAsset: ImagePicker.ImagePickerAsset,
+    bucketName: string = 'product-images'
+  ): Promise<string | null> => {
+    setIsUploadingImage(true);
+    console.log(`[ProductDetails.uploadImageWithTus] Starting image upload (Bucket: ${bucketName}). Asset URI: ${imageAsset.uri}`);
+    
+    try {
+      const uri = imageAsset.uri;
+      if (!uri) {
+        console.error('[ProductDetails.uploadImageWithTus] Image asset URI is null or undefined.');
+        throw new Error('Image asset URI is null or undefined.');
+      }
+
+      let contentType = imageAsset.mimeType;
+      if (!contentType && imageAsset.fileName) {
+        const extension = imageAsset.fileName.split('.').pop()?.toLowerCase();
+        if (extension) {
+          contentType = `image/${extension === 'jpg' ? 'jpeg' : extension}`;
+        }
+      }
+      contentType = contentType || 'application/octet-stream';
+      console.log(`[ProductDetails.uploadImageWithTus] Determined Content-Type: ${contentType}`);
+
+      let fileExtension = uri.split('.').pop()?.toLowerCase();
+      if (!fileExtension && imageAsset.fileName) {
+        fileExtension = imageAsset.fileName.split('.').pop()?.toLowerCase();
+      }
+      fileExtension = fileExtension || 'jpg';
+
+      const objectName = `public/product-${Date.now()}.${fileExtension}`;
+      console.log(`[ProductDetails.uploadImageWithTus] Target Supabase objectName for TUS: ${objectName}`);
+
+      const response = await fetch(uri);
+      if (!response.ok) {
+        const responseText = await response.text();
+        throw new Error(`Failed to fetch asset for blob. Status: ${response.status}. Response: ${responseText}`);
+      }
+      const blob = await response.blob();
+      const finalContentType = (blob.type && blob.type !== 'application/octet-stream') ? blob.type : contentType;
+      console.log(`[ProductDetails.uploadImageWithTus] Blob created, size: ${blob.size}, type: ${blob.type}. Using Content-Type: ${finalContentType}`);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || !session.access_token) throw new Error('User not authenticated for TUS upload.');
+      const accessToken = session.access_token;
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      if (!supabaseUrl) throw new Error('EXPO_PUBLIC_SUPABASE_URL not defined.');
+      
+      const tusMetadata = { bucketName, objectName, contentType: finalContentType, cacheControl: '3600' };
+      console.log('[ProductDetails.uploadImageWithTus] TUS Metadata:', tusMetadata);
+
+      return new Promise((resolve, reject) => {
+        const upload = new tus.Upload(blob, {
+          endpoint: `${supabaseUrl}/storage/v1/upload/resumable`,
+          retryDelays: [0, 3000, 5000, 10000, 20000],
+          headers: { authorization: `Bearer ${accessToken}`, 'x-upsert': 'true' },
+          metadata: tusMetadata,
+          chunkSize: 6 * 1024 * 1024, 
+          uploadDataDuringCreation: true, 
+          removeFingerprintOnSuccess: true,
+          onError: (error) => {
+            console.error('[ProductDetails.uploadImageWithTus] TUS onError:', error.message);
+            reject(error);
+          },
+          onProgress: (bytesUploaded, bytesTotal) => {
+            console.log(`[ProductDetails.uploadImageWithTus] Progress: ${((bytesUploaded / bytesTotal) * 100).toFixed(2)}%`);
+          },
+          onSuccess: () => {
+            const { data: publicUrlData } = supabase.storage.from(bucketName).getPublicUrl(objectName);
+            if (!publicUrlData || !publicUrlData.publicUrl) {
+              reject(new Error('TUS: Upload successful but failed to get public URL.'));
+              return;
+            }
+            console.log(`[ProductDetails.uploadImageWithTus] Success! Public URL: ${publicUrlData.publicUrl}`);
+            resolve(publicUrlData.publicUrl);
+          },
+        });
+        upload.findPreviousUploads().then((previousUploads) => {
+          if (previousUploads.length) upload.resumeFromPreviousUpload(previousUploads[0]);
+          upload.start();
+        }).catch(reject);
+      });
+    } catch (error: any) {
+      console.error('[ProductDetails.uploadImageWithTus] CATCH BLOCK:', error.message);
+      Alert.alert('Upload Error', 'Image upload failed. Please try again.');
+      return null;
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
+  // END: Image Picker and Upload Functions
+
+  // START: New Helper Function to get storage path
+  const getStoragePathFromUrl = (url: string | null): string | null => {
+    if (!url) return null;
+    try {
+      const urlObject = new URL(url);
+      // Example URL: https://<project_ref>.supabase.co/storage/v1/object/public/product-images/public/product-123.jpg
+      // We need the path after /object/public/product-images/, which is 'public/product-123.jpg'
+      const pathSegments = urlObject.pathname.split('/');
+      const bucketNameIndex = pathSegments.indexOf('product-images'); // Your bucket name
+
+      if (bucketNameIndex !== -1 && bucketNameIndex < pathSegments.length - 1) {
+        return pathSegments.slice(bucketNameIndex + 1).join('/');
+      }
+      console.warn('[getStoragePathFromUrl] Could not parse path from URL:', url);
+      return null;
+    } catch (e) {
+      console.warn('[getStoragePathFromUrl] Invalid URL for parsing path:', url, e);
+      return null;
+    }
+  };
+  // END: New Helper Function
 
   const populateForm = (p: Product) => {
     setName(p.name || '');
@@ -56,6 +248,7 @@ export default function ProductDetailsScreen() {
     setDescription(p.description || '');
     setSku(p.sku || '');
     setImageUrl(p.image_url || '');
+    setSelectedImageForEdit(null);
   };
   
   const fetchProduct = async () => {
@@ -106,7 +299,7 @@ export default function ProductDetailsScreen() {
   }, [id]);
 
   useEffect(() => {
-    if (isEditMode) { // Fetch categories only when entering edit mode
+    if (isEditMode) {
       fetchProductCategories();
     }
   }, [isEditMode, fetchProductCategories]);
@@ -114,6 +307,9 @@ export default function ProductDetailsScreen() {
   const handleEditToggle = () => {
     if (isEditMode && product) {
         populateForm(product);
+    } else if (!isEditMode && product) {
+        setSelectedImageForEdit(null);
+        setImageUrl(product.image_url || '');
     }
     setIsEditMode(!isEditMode);
   };
@@ -122,19 +318,110 @@ export default function ProductDetailsScreen() {
     if (!product) return;
     setSaving(true);
 
-    const updatedProductData = {
+    let finalImageUrl: string | null = imageUrl; // Holds the URL to be saved to DB
+    let oldImageStoragePath: string | null = getStoragePathFromUrl(product.image_url); // Get path of current image in DB
+
+    // Scenario 1: A new image is selected via ImagePicker
+    if (selectedImageForEdit) {
+      console.log('[ProductDetails.save] New image selected. Processing...');
+      setIsUploadingImage(true);
+      try {
+        const compressedUri = await compressImage(selectedImageForEdit.uri);
+        if (compressedUri) {
+          const newAssetForUpload = { ...selectedImageForEdit, uri: compressedUri };
+          const uploadedUrl = await uploadImageWithTus(newAssetForUpload);
+          if (uploadedUrl) {
+            finalImageUrl = uploadedUrl; // New URL for the DB
+            console.log('[ProductDetails.save] New image uploaded. URL for DB:', finalImageUrl);
+            // If the old image path was different, it's now orphaned (unless it was already null)
+          } else {
+            Alert.alert('Image Upload Failed', 'The new image could not be uploaded. No changes made to image.');
+            finalImageUrl = product.image_url; // Revert to original DB image URL
+            oldImageStoragePath = null; // Don't delete anything if upload failed
+          }
+        } else {
+          Alert.alert('Image Compression Failed', 'Could not compress. No changes made to image.');
+          finalImageUrl = product.image_url; // Revert
+          oldImageStoragePath = null; // Don't delete
+        }
+      } catch (uploadError) {
+        console.error('[ProductDetails.save] Error during new image processing:', uploadError);
+        Alert.alert('Image Error', 'An error occurred with the new image. No changes made to image.');
+        finalImageUrl = product.image_url; // Revert
+        oldImageStoragePath = null; // Don't delete
+      } finally {
+        setIsUploadingImage(false);
+      }
+    } 
+    // Scenario 2: No new image selected, but existing image was explicitly removed via UI
+    // (imageUrl state is empty, but product.image_url was not empty)
+    else if (imageUrl === '' && product.image_url) { 
+      console.log('[ProductDetails.save] Image explicitly removed by user.');
+      finalImageUrl = null; // Set to null for the DB
+      // oldImageStoragePath already holds the path of the image to be deleted
+    } 
+    // Scenario 3: No new image, no removal, imageUrl state might have been edited manually (not via picker)
+    // This path primarily handles if a user manually types/pastes a URL into the (now removed) text input.
+    // For picker flow, if image is unchanged, finalImageUrl should equal product.image_url from populateForm
+    // and oldImageStoragePath will correctly point to it, but we only delete if it *changes* or is set to null.
+    else {
+        // If finalImageUrl (from UI state) is different from product.image_url (original DB state)
+        // and a new image wasn't picked (selectedImageForEdit is null),
+        // it implies a manual URL change or no change. We don't want to delete the old one in this specific sub-case
+        // unless finalImageUrl becomes null.
+        if (finalImageUrl !== product.image_url) {
+            // If URL changed manually and there was an old one, that old one is now orphaned by this logic path.
+            // This case is less likely with the new picker UI. If finalImageUrl IS an actual new URL,
+            // oldImageStoragePath is correct. If finalImageUrl is just the same old URL, no deletion happens.
+        } else {
+            // Image URL is the same as in DB, and no new image selected. No storage deletion needed.
+            oldImageStoragePath = null; 
+        }
+    }
+
+    // If the image URL that will be saved to the DB (finalImageUrl) 
+    // is different from what was originally in the DB (product.image_url),
+    // AND the original image_url was not null (meaning there was an old image to delete),
+    // then oldImageStoragePath should be valid for deletion.
+    // However, if a new image upload failed, oldImageStoragePath was set to null to prevent deletion.
+    // And if image is unchanged, oldImageStoragePath was also nulled.
+    // So, we only care about oldImageStoragePath if finalImageUrl IS NOT the same as product.image_url
+    // This means an actual change (new image OR removal) happened.
+    let pathToActuallyDelete = null;
+    if (finalImageUrl !== product.image_url && oldImageStoragePath) {
+        if (product.image_url) { // Ensure there *was* an old image_url
+             pathToActuallyDelete = getStoragePathFromUrl(product.image_url); // Re-fetch to be sure
+        }
+    }
+    // If a new image was uploaded, finalImageUrl is new. oldImageStoragePath (from product.image_url) should be deleted.
+    // If image was removed, finalImageUrl is null. oldImageStoragePath (from product.image_url) should be deleted.
+    // If image upload failed, finalImageUrl reverted to product.image_url, so they are same, pathToActuallyDelete remains null.
+    // If image is unchanged, finalImageUrl is same as product.image_url, pathToActuallyDelete remains null.
+
+
+    const updatedProductData: Partial<Product> = {
       name,
-      price: parseFloat(price) || null,
-      category: category || null,
-      stock_count: parseInt(stock, 10) || null,
-      description: description || null,
-      sku: sku || null,
-      image_url: imageUrl || null,
+      price: parseFloat(price) || product.price,
+      category: category || product.category,
+      stock_count: parseInt(stock, 10) >= 0 ? parseInt(stock, 10) : product.stock_count,
+      description: description,
+      sku: sku,
+      image_url: finalImageUrl, 
       updated_at: new Date().toISOString(),
     };
+    Object.keys(updatedProductData).forEach(key => 
+        (updatedProductData as any)[key] === undefined && delete (updatedProductData as any)[key]
+    );
+    if (updatedProductData.price !== undefined && isNaN(updatedProductData.price)) {
+        Alert.alert('Invalid Input', 'Price must be a valid number.'); setSaving(false); return;
+    }
+    if (updatedProductData.stock_count !== undefined && isNaN(updatedProductData.stock_count)){
+        Alert.alert('Invalid Input', 'Stock count must be a valid number.'); setSaving(false); return;
+    }
 
     try {
-      const { data: updatedData, error: updateError } = await supabase
+      console.log('[ProductDetails.save] Updating product in DB with data:', updatedProductData);
+      const { data: savedData, error: updateError } = await supabase
         .from('products')
         .update(updatedProductData)
         .eq('id', product.id)
@@ -142,15 +429,35 @@ export default function ProductDetailsScreen() {
         .single();
 
       if (updateError) throw updateError;
-      if (updatedData) {
-        setProduct(updatedData);
-        populateForm(updatedData);
+      
+      // If DB update is successful, then attempt to delete old storage object if necessary
+      if (pathToActuallyDelete) {
+        console.log('[ProductDetails.save] DB update successful. Attempting to delete old image from storage:', pathToActuallyDelete);
+        try {
+          const { error: deleteStorageError } = await supabase.storage
+            .from('product-images')
+            .remove([pathToActuallyDelete]);
+          if (deleteStorageError) {
+            console.warn('[ProductDetails.save] Failed to delete old image from storage:', deleteStorageError);
+            Alert.alert('Cleanup Warning', 'Product updated, but failed to remove the old image from storage. It may need to be manually cleaned up later.');
+          } else {
+            console.log('[ProductDetails.save] Old image successfully deleted from storage:', pathToActuallyDelete);
+          }
+        } catch (storageError) {
+            console.warn('[ProductDetails.save] Exception during old image deletion from storage:', storageError);
+        }
+      }
+
+      if (savedData) {
+        setProduct(savedData as Product);
+        populateForm(savedData as Product); 
       }
       Alert.alert('Success', 'Product updated successfully!');
       setIsEditMode(false);
+      setSelectedImageForEdit(null);
     } catch (e: any) {
       console.error('Error saving product:', e);
-      Alert.alert('Error', e.message || "Failed to save product.");
+      Alert.alert('Error', e.message || "Failed to save product changes.");
     } finally {
       setSaving(false);
     }
@@ -427,6 +734,49 @@ export default function ProductDetailsScreen() {
         fontFamily: 'Inter-Medium',
         fontSize: FONT_SIZE.md,
     },
+    imageEditorContainer: {
+      marginBottom: SPACING.lg,
+      alignItems: 'center',
+    },
+    imagePreviewContainer: {
+      width: 180, 
+      height: 180,
+      borderRadius: BORDER_RADIUS.lg,
+      backgroundColor: themeColors.surface,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginBottom: SPACING.md,
+      borderWidth: 1,
+      borderColor: themeColors.border,
+      overflow: 'hidden', 
+    },
+    editableImage: {
+      width: '100%',
+      height: '100%',
+    },
+    imagePlaceholder: {
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    imagePlaceholderText: {
+      marginTop: SPACING.sm,
+      color: themeColors.textLight,
+      fontSize: FONT_SIZE.sm,
+      textAlign: 'center',
+    },
+    imagePickerButtons: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      width: '100%',
+      maxWidth: 400, 
+      marginBottom: SPACING.sm,
+    },
+    removeImageButton: {
+      marginTop: SPACING.sm,
+      width: '100%',
+      maxWidth: 400,
+      borderColor: themeColors.error, 
+    },
   });
 
   if (loading) {
@@ -461,7 +811,52 @@ export default function ProductDetailsScreen() {
             <Text style={styles.screenTitle}>{isEditMode ? 'Edit Product' : 'Product Details'}</Text>
         </View>
       <ScrollView contentContainerStyle={[styles.scrollContent]} showsVerticalScrollIndicator={false}>
-        {product.image_url ? (
+        {isEditMode ? (
+          <View style={styles.imageEditorContainer}> 
+            <Text style={[styles.detailLabel, { marginBottom: SPACING.sm, width: 'auto' }]}>Product Image</Text>
+            <TouchableOpacity onPress={() => pickImage('gallery')} style={styles.imagePreviewContainer}>
+              {imageUrl ? (
+                <Image source={{ uri: imageUrl }} style={styles.editableImage} resizeMode="cover" />
+              ) : (
+                <View style={[styles.editableImage, styles.imagePlaceholder]}>
+                  <ImageIcon size={48} color={themeColors.textLight} />
+                  <Text style={styles.imagePlaceholderText}>Tap to select</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <View style={styles.imagePickerButtons}>
+              <Button
+                title="Gallery"
+                onPress={() => pickImage('gallery')}
+                icon={<ImageIcon size={16} color={themeColors.primary} />}
+                variant="outline"
+                style={{ flex: 1, marginRight: SPACING.sm }}
+                textStyle={{ fontSize: FONT_SIZE.sm }}
+              />
+              <Button
+                title="Camera"
+                onPress={() => pickImage('camera')}
+                icon={<Camera size={16} color={themeColors.primary} />}
+                variant="outline"
+                style={{ flex: 1, marginLeft: SPACING.sm }}
+                textStyle={{ fontSize: FONT_SIZE.sm }}
+              />
+            </View>
+            {imageUrl && (
+              <Button
+                title="Remove Image"
+                onPress={() => {
+                  setSelectedImageForEdit(null);
+                  setImageUrl('');
+                }}
+                variant="outline"
+                icon={<X size={16} color={themeColors.error} />}
+                style={styles.removeImageButton}
+                textStyle={{ fontSize: FONT_SIZE.sm, color: themeColors.error }}
+              />
+            )}
+          </View>
+        ) : product?.image_url ? (
           <Image
             source={{ uri: product.image_url }}
             style={styles.productImage}
@@ -520,7 +915,7 @@ export default function ProductDetailsScreen() {
                 <ChevronDown size={20} color={themeColors.textLight} />
               </TouchableOpacity>
             ) : (
-              <Text style={styles.detailValue}>{product.category}</Text>
+              <Text style={styles.detailValue}>{product?.category}</Text>
             )}
           </View>
           
@@ -540,12 +935,12 @@ export default function ProductDetailsScreen() {
                 <Text
                   style={[
                     styles.detailValue,
-                    product.stock_count < 10 ? styles.lowStockText : null,
+                    product?.stock_count !== undefined && product.stock_count < 10 ? styles.lowStockText : null,
                   ]}
                 >
-                  {product.stock_count} units
+                  {product?.stock_count} units
                 </Text>
-                {product.stock_count < 10 && (
+                {product?.stock_count !== undefined && product.stock_count < 10 && (
                   <View style={styles.lowStockBadge}>
                     <AlertTriangle size={12} color={themeColors.white} />
                     <Text style={styles.lowStockBadgeText}>Low</Text>
@@ -555,7 +950,7 @@ export default function ProductDetailsScreen() {
             )}
           </View>
           
-          {isEditMode || product.sku ? (
+          {isEditMode || product?.sku ? (
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>SKU</Text>
               {isEditMode ? (
@@ -567,25 +962,10 @@ export default function ProductDetailsScreen() {
                   placeholderTextColor={themeColors.textLight}
                 />
               ) : (
-                <Text style={styles.detailValue}>{product.sku}</Text>
+                <Text style={styles.detailValue}>{product?.sku}</Text>
               )}
             </View>
           ) : null}
-          
-          {isEditMode && (
-            <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Image URL</Text>
-                <TextInput
-                    style={styles.inputField}
-                    value={imageUrl}
-                    onChangeText={setImageUrl}
-                    placeholder="https://example.com/image.png (optional)"
-                    placeholderTextColor={themeColors.textLight}
-                    autoCapitalize="none"
-                    keyboardType="url"
-                />
-            </View>
-          )}
           
           {!isEditMode && (
             <>

@@ -14,6 +14,8 @@ import { getCategories, Category as ProductCategory } from '@/lib/categoryServic
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { SPACING, BORDER_RADIUS, FONT_SIZE } from '@/constants/theme';
+import { Asset } from 'expo-asset';
+import * as tus from 'tus-js-client';
 
 // Product categories - Will be fetched from DB
 // const CATEGORIES = [
@@ -176,141 +178,225 @@ export default function AddProductScreen() {
     }
   };
 
-  const uploadImage = async (imageUri: string, productId?: string): Promise<string | null> => {
-    if (!imageUri) return null;
+  // Renamed and refactored for dynamic images using TUS
+  const uploadImageWithTus = async (
+    imageAsset: ImagePicker.ImagePickerAsset,
+    bucketName: string = 'product-images'
+  ): Promise<string | null> => {
     setIsUploading(true);
-    console.log(`[UploadImage] Starting upload for URI: ${imageUri}, Product ID: ${productId}`);
+    console.log(`[uploadImageWithTus] Starting image upload with TUS (Bucket: ${bucketName}). Asset URI: ${imageAsset.uri}`);
+    
     try {
-      console.log('[UploadImage] Compressing image...');
-      const compressedUri = await compressImage(imageUri);
-      if (!compressedUri) {
-        console.warn('[UploadImage] Compression resulted in null URI.');
-        setIsUploading(false);
-        return null;
-      }
-      console.log(`[UploadImage] Compressed URI: ${compressedUri}`);
-
-      // Determine file extension and content type more robustly from the compressed URI
-      let fileExt = compressedUri.split('.').pop()?.toLowerCase() || 'jpg';
-      let contentType = `image/${fileExt}`;
-      // ImageManipulator often outputs JPEG regardless of input extension after compression to SaveFormat.JPEG
-      if (fileExt === 'jpg' || fileExt === 'jpeg') {
-          contentType = 'image/jpeg'; 
-          if (fileExt === 'jpg') fileExt = 'jpeg'; // Standardize to jpeg extension for consistency if desired
+      const uri = imageAsset.uri; // URI from the (potentially compressed) ImagePickerAsset
+      if (!uri) {
+        console.error('[uploadImageWithTus] Image asset URI is null or undefined.');
+        throw new Error('Image asset URI is null or undefined.');
       }
 
-      const fileName = `${productId || Date.now()}.${fileExt}`;
-      const filePath = `public/${fileName}`; 
-      console.log(`[UploadImage] Target Supabase filePath: ${filePath}, Content-Type: ${contentType}`);
-
-      console.log('[UploadImage] Fetching blob from compressed URI...');
-      const response = await fetch(compressedUri);
-      const blob = await response.blob();
-      console.log(`[UploadImage] Blob created, size: ${blob.size}, type: ${blob.type}`);
-      
-      console.log('[UploadImage] Attempting to upload to Supabase Storage...');
-      const { data, error } = await supabase.storage
-        .from('product-images') 
-        .upload(filePath, blob, {
-          contentType: contentType, // Use the determined contentType
-          upsert: true, // Keep as false for now, can be changed to true for testing name collisions
-        });
-
-      if (error) {
-        console.error('[UploadImage] Supabase upload error object:', JSON.stringify(error, null, 2));
-        throw error; // Re-throw to be caught by the outer catch
-      }
-
-      if (data) {
-        console.log('[UploadImage] Supabase upload successful, data:', JSON.stringify(data, null, 2));
-        const { data: publicUrlData } = supabase.storage.from('product-images').getPublicUrl(filePath);
-        console.log('[UploadImage] Public URL data:', publicUrlData);
-        if (publicUrlData && publicUrlData.publicUrl) {
-          console.log('[UploadImage] Image public URL:', publicUrlData.publicUrl);
-          setIsUploading(false);
-          return publicUrlData.publicUrl;
-        } else {
-          console.error('[UploadImage] Failed to get public URL, but upload reported success.');
-          const fallbackUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/storage/v1/object/public/product-images/${filePath}`;
-          console.warn('[UploadImage] Using fallback URL:', fallbackUrl);
-          setIsUploading(false);
-          return fallbackUrl; 
+      // Determine content type
+      let contentType = imageAsset.mimeType; // Prefer mimeType from ImagePickerAsset
+      if (!contentType && imageAsset.fileName) {
+        const extension = imageAsset.fileName.split('.').pop()?.toLowerCase();
+        if (extension) {
+          contentType = `image/${extension === 'jpg' ? 'jpeg' : extension}`;
         }
       }
-      console.warn('[UploadImage] Upload successful but no data returned from Supabase storage.upload ');
-      setIsUploading(false);
-      return null;
+      contentType = contentType || 'application/octet-stream'; // Fallback
+      console.log(`[uploadImageWithTus] Determined Content-Type: ${contentType}`);
+
+      // Determine file extension from URI or filename, default to 'jpg' (as compression often goes to JPEG)
+      let fileExtension = uri.split('.').pop()?.toLowerCase();
+      if (!fileExtension && imageAsset.fileName) {
+        fileExtension = imageAsset.fileName.split('.').pop()?.toLowerCase();
+      }
+      fileExtension = fileExtension || 'jpg';
+
+
+      const objectName = `public/product-${Date.now()}.${fileExtension}`;
+      console.log(`[uploadImageWithTus] Target Supabase objectName for TUS: ${objectName}`);
+
+      console.log(`[uploadImageWithTus] Fetching blob from URI: ${uri}...`);
+      const response = await fetch(uri);
+      if (!response.ok) {
+        const responseText = await response.text();
+        console.error(`[uploadImageWithTus] Failed to fetch asset for blob. Status: ${response.status}. Response: ${responseText}`);
+        throw new Error(`Failed to fetch asset for blob. Status: ${response.status}`);
+      }
+      const blob = await response.blob();
+      
+      // Use blob.type if available and valid, otherwise stick with determined contentType
+      const finalContentType = (blob.type && blob.type !== 'application/octet-stream') ? blob.type : contentType;
+      console.log(`[uploadImageWithTus] Blob created, size: ${blob.size}, type from blob: ${blob.type}. Using Content-Type: ${finalContentType}`);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || !session.access_token) {
+        throw new Error('User not authenticated or access token unavailable for TUS upload.');
+      }
+      const accessToken = session.access_token;
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      if (!supabaseUrl) {
+        throw new Error('EXPO_PUBLIC_SUPABASE_URL is not defined for TUS upload.');
+      }
+      
+      const tusMetadata = {
+        bucketName: bucketName,
+        objectName: objectName, 
+        contentType: finalContentType,
+        cacheControl: '3600',
+      };
+      console.log('[uploadImageWithTus] TUS Metadata to be used:', tusMetadata);
+
+      return new Promise((resolve, reject) => {
+        const upload = new tus.Upload(blob, {
+          endpoint: `${supabaseUrl}/storage/v1/upload/resumable`,
+          retryDelays: [0, 3000, 5000, 10000, 20000],
+          headers: {
+            authorization: `Bearer ${accessToken}`,
+            'x-upsert': 'true', 
+          },
+          metadata: tusMetadata,
+          chunkSize: 6 * 1024 * 1024, 
+          uploadDataDuringCreation: true, 
+          removeFingerprintOnSuccess: true, 
+          onError: (error) => {
+            console.error('[uploadImageWithTus] TUS onError:', error);
+            console.error('[uploadImageWithTus] TUS onError (message):', error.message);
+            const tusError = error as any;
+            if (tusError.originalRequest) {
+              console.error('[uploadImageWithTus] TUS Original Request that failed:', tusError.originalRequest);
+            }
+            if (tusError.originalResponse) {
+              console.error('[uploadImageWithTus] TUS Original Response that failed:', tusError.originalResponse);
+              if (tusError.originalResponse._xhr && tusError.originalResponse._xhr.responseText) {
+                 console.error('[uploadImageWithTus] TUS Failed Response Text (from _xhr):', tusError.originalResponse._xhr.responseText);
+              } else {
+                 console.warn('[uploadImageWithTus] TUS: originalResponse._xhr.responseText not found.');
+              }
+            } else {
+                console.warn('[uploadImageWithTus] TUS: error.originalResponse was not available.');
+            }
+            reject(error);
+          },
+          onProgress: (bytesUploaded, bytesTotal) => {
+            const percentage = ((bytesUploaded / bytesTotal) * 100).toFixed(2);
+            console.log(`[uploadImageWithTus] TUS onProgress: ${bytesUploaded} / ${bytesTotal} (${percentage}%)`);
+          },
+          onSuccess: () => {
+            console.log(`[uploadImageWithTus] TUS onSuccess: Upload completed for ${objectName}`);
+            const { data: publicUrlData } = supabase.storage.from(bucketName).getPublicUrl(objectName);
+            if (!publicUrlData || !publicUrlData.publicUrl) {
+              console.error('[uploadImageWithTus] TUS: Could not get public URL. PublicUrlData:', publicUrlData);
+              reject(new Error('TUS: Upload successful but failed to get public URL.'));
+              return;
+            }
+            console.log(`[uploadImageWithTus] TUS: Public URL: ${publicUrlData.publicUrl}`);
+            resolve(publicUrlData.publicUrl);
+          },
+        });
+
+        console.log('[uploadImageWithTus] TUS: Attempting to find previous uploads...');
+        upload.findPreviousUploads().then((previousUploads) => {
+          if (previousUploads.length) {
+            console.log('[uploadImageWithTus] TUS: Found previous uploads, attempting to resume:', previousUploads);
+            upload.resumeFromPreviousUpload(previousUploads[0]);
+          }
+          console.log('[uploadImageWithTus] TUS: Starting upload...');
+          upload.start();
+        }).catch(err => {
+            console.error('[uploadImageWithTus] TUS: Error in findPreviousUploads or start:', err);
+            reject(err);
+        });
+      });
+
     } catch (error: any) {
-      setIsUploading(false);
-      // Log the error object itself for more details, especially for network errors
-      console.error('[UploadImage] CATCH BLOCK: Image upload process failed. Error object:', error);
-      if (error.message) {
-        console.error('[UploadImage] CATCH BLOCK: Error message:', error.message);
-      }
+      console.error('[uploadImageWithTus] CATCH BLOCK: Image upload process failed.');
+      Alert.alert('Upload Error', 'An unexpected error occurred during image upload. Please try again.');
+      console.error('[uploadImageWithTus] Error Name:', error.name);
+      console.error('[uploadImageWithTus] Error Message:', error.message);
       if (error.stack) {
-        console.error('[UploadImage] CATCH BLOCK: Error stack:', error.stack);
+          console.error('[uploadImageWithTus] Error Stack:', error.stack);
       }
-      // Alert.alert('Upload Error', error.message || 'Failed to upload image.'); // Alert is already in handleAddProduct
       return null;
+    } finally {
+      setIsUploading(false);
+      console.log(`[uploadImageWithTus] Image upload process ended.`);
     }
   };
 
   const handleAddProduct = async (values: any, { resetForm }: { resetForm: () => void }) => {
-    // if (!selectedImage) { // Remove this check to make image optional
-    //   Alert.alert('Image Required', 'Please select an image for the product.');
-    //   return;
-    // }
+    console.log('[AddProduct] Initiating add product...');
+    setLoading(true); 
 
-    try {
-      setLoading(true);
-      let imageUrl: string | null = null;
+    let imageUrl: string | null = null;
+    let processedImageAsset: ImagePicker.ImagePickerAsset | null = selectedImage;
 
-      if (selectedImage && selectedImage.uri) {
-        setIsUploading(true);
-        imageUrl = await uploadImage(selectedImage.uri, values.name.replace(/\s+/g, '_').toLowerCase());
-        setIsUploading(false);
+    if (selectedImage) {
+      console.log('[AddProduct] Selected image found. Attempting compression...');
+      try {
+        const compressedUri = await compressImage(selectedImage.uri);
+        if (compressedUri) {
+          console.log('[AddProduct] Image compressed successfully. URI:', compressedUri);
+          processedImageAsset = { 
+            ...selectedImage, 
+            uri: compressedUri, 
+            mimeType: 'image/jpeg', 
+            fileName: selectedImage.fileName ? selectedImage.fileName.replace(/\.[^/.]+$/, ".jpg") : `compressed-${Date.now()}.jpg`,
+          };
+        } else {
+          console.warn('[AddProduct] Image compression failed or returned null URI. Will attempt to upload original.');
+        }
+      } catch (compressionError) {
+        console.error('[AddProduct] Error during image compression:', compressionError);
+        Alert.alert('Compression Error', 'Failed to compress image. Attempting to upload original.');
+      }
 
-        if (!imageUrl && selectedImage) { // Check selectedImage here to ensure an attempt was made but failed
-          // Error during upload was likely already handled by uploadImage, 
-          // but we stop product creation if an image was selected but failed to upload.
-          setLoading(false);
-          Alert.alert("Upload Failed", "The selected image could not be uploaded. Please try a different image or skip adding one.");
-          return;
+      if (processedImageAsset) {
+          imageUrl = await uploadImageWithTus(processedImageAsset, 'product-images'); 
+
+      if (!imageUrl) {
+          Alert.alert('Image Upload Failed', 'The selected image could not be uploaded. Please try again or add the product without an image.');
+        } else {
+          console.log('[AddProduct] Image uploaded successfully. URL:', imageUrl);
         }
       }
-      
-      const { data, error } = await supabase
+    } else {
+      console.log('[AddProduct] No image selected.');
+    }
+    
+    try {
+      console.log('[AddProduct] Submitting product data to Supabase...');
+      const { data: productData, error: productError } = await supabase
         .from('products')
         .insert({
           name: values.name,
-          price: values.price,
+          price: parseFloat(values.price),
           category: values.category,
-          stock_count: values.stockCount,
-          description: values.description || null,
-          sku: values.sku || null,
-          image_url: imageUrl, // Save the new image URL
+          stock_count: parseInt(values.stockCount),
+          description: values.description,
+          sku: values.sku,
+          image_url: imageUrl, 
         })
         .select();
 
-      if (error) {
-        // If product insert fails, consider deleting the uploaded image (optional)
-        // await supabase.storage.from('product-images').remove([imageUrl.split('/').pop()!]);
-        throw error;
+      if (productError) {
+        console.error('[AddProduct] Supabase product insert error:', productError);
+        throw productError;
       }
 
+      console.log('[AddProduct] Product added successfully to Supabase:', productData);
       Alert.alert('Success', 'Product added successfully!', [
         { text: 'OK', onPress: () => {
             resetForm();
-            setSelectedImage(null);
+            setSelectedImage(null); 
             router.back();
           } 
         }
       ]);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to add product');
+      console.error('[AddProduct] Error during product submission:', error);
+      Alert.alert('Product Submission Error', error.message || 'Failed to add product.');
     } finally {
       setLoading(false);
-      setIsUploading(false);
     }
   };
 
@@ -462,6 +548,12 @@ export default function AddProductScreen() {
       justifyContent: 'center',
       alignItems: 'center',
       zIndex: 10,
+    },
+    imagePlaceholder: {
+      justifyContent: 'center',
+      alignItems: 'center',
+      width: '100%',
+      height: '100%',
     }
   });
 
@@ -583,6 +675,54 @@ export default function AddProductScreen() {
                 />
 
                 <View style={styles.inputContainer}>
+                  <Text style={styles.label}>Product Image</Text>
+                  <View style={styles.imagePickerContainer}>
+                    <TouchableOpacity onPress={() => pickImage('gallery')} style={styles.imagePreview}>
+                      {selectedImage ? (
+                        <Image source={{ uri: selectedImage.uri }} style={styles.image} />
+                      ) : (
+                        <View style={styles.imagePlaceholder}>
+                          <ImageIcon size={48} color={themeColors.textLight} />
+                          <Text style={[styles.placeholderText, { marginTop: SPACING.sm }]}>Tap to select</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                    <View style={styles.imagePickerButtons}>
+                      <Button
+                        title="From Gallery"
+                        onPress={() => pickImage('gallery')}
+                        icon={<ImageIcon size={18} color={themeColors.primary} />}
+                        variant="outline"
+                        style={{ flex: 1, marginRight: SPACING.sm }}
+                        textStyle={{ fontSize: FONT_SIZE.sm }}
+                      />
+                      <Button
+                        title="Use Camera"
+                        onPress={() => pickImage('camera')}
+                        icon={<Camera size={18} color={themeColors.primary} />}
+                        variant="outline"
+                        style={{ flex: 1, marginLeft: SPACING.sm }}
+                        textStyle={{ fontSize: FONT_SIZE.sm }}
+                      />
+                    </View>
+                    {selectedImage && (
+                      <Button
+                        title="Remove Image"
+                        onPress={() => setSelectedImage(null)}
+                        variant="outline"
+                        icon={<X size={18} color={themeColors.error} />}
+                        style={{ 
+                          marginTop: SPACING.md, 
+                          width: '100%', 
+                          borderColor: themeColors.error 
+                        }}
+                        textStyle={{ fontSize: FONT_SIZE.sm, color: themeColors.error }}
+                      />
+                    )}
+                  </View>
+                </View>
+
+                <View style={styles.inputContainer}>
                   <Text style={styles.label}>Description</Text>
                   <TextInput
                     style={[
@@ -601,44 +741,6 @@ export default function AddProductScreen() {
                   {touched.description && errors.description ? (
                     <Text style={styles.errorText}>{errors.description}</Text>
                   ) : null}
-                </View>
-
-                <View style={styles.inputContainer}>
-                  <Text style={styles.label}>Product Image</Text>
-                  <View style={styles.imagePickerContainer}>
-                    <TouchableOpacity 
-                      onPress={() => Alert.alert("Select Image Source", "", [
-                        { text: "Camera", onPress: () => pickImage('camera')},
-                        { text: "Gallery", onPress: () => pickImage('gallery')},
-                        { text: "Cancel", style: "cancel"}
-                      ])}
-                      style={styles.imagePreview}
-                    >
-                      {selectedImage ? (
-                        <Image source={{ uri: selectedImage.uri }} style={styles.image} />
-                      ) : (
-                        <ImageIcon size={48} color={themeColors.textLight} />
-                      )}
-                    </TouchableOpacity>
-                     <View style={styles.imagePickerButtons}>
-                      <Button 
-                          title="From Gallery" 
-                          onPress={() => pickImage('gallery')} 
-                          variant='outline' 
-                          icon={<ImageIcon size={18} color={themeColors.primary} />}
-                          style={{flex:1, marginRight: SPACING.xs}}
-                          textStyle={{fontSize: FONT_SIZE.sm}}
-                      />
-                       <Button 
-                          title="Use Camera" 
-                          onPress={() => pickImage('camera')} 
-                          variant='outline'
-                          icon={<Camera size={18} color={themeColors.primary} />}
-                          style={{flex:1, marginLeft: SPACING.xs}}
-                          textStyle={{fontSize: FONT_SIZE.sm}}
-                      />
-                    </View>
-                  </View>
                 </View>
 
                 <View style={styles.buttonGroup}>
